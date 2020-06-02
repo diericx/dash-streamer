@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"strings"
 	"time"
@@ -21,30 +19,34 @@ type CReader struct {
 }
 
 func (c CReader) Read(p []byte) (n int, err error) {
-	n, err = c.Reader.Read(p)
+	var p2 []byte
+	n, err = c.Reader.Read(p2)
 
-	// err = ioutil.WriteFile("buffer-in.mp4", p, 0644)
-	// if err != nil {
-	// 	panic(err)
-	// }
+	copy(p2, p)
 
-	// // cmd := exec.Command("ffmpeg", "-i", "buffer-in.mp4", "-ab", "300k", "-f", "mp4", "frag_keyframe+empty_moov+faststart", "buffer.mp4")
-	// cmd := exec.Command("ffmpeg", "-i", "buffer-in.mp4", "-c:v", "libvpx", "-b:v", "1M", "libvorbis", "buffer.webm")
+	// cmd := exec.Command("ffmpeg", "-i", "pipe:0", "-listen", "1", "-f", "matroska", "-c:v", "libx264", "-b", "300k", "-preset", "fast", "-tune", "zerolatency", "pipe:1")
+	// stdin, err := cmd.StdinPipe()
 	// var out bytes.Buffer
-	// var stderr bytes.Buffer
 	// cmd.Stdout = &out
-	// cmd.Stderr = &stderr
-
-	// err = cmd.Run()
 	// if err != nil {
-	// 	log.Printf("ffmpeg err: %v", stderr.String())
 	// 	log.Panic(err)
 	// }
-	// log.Printf("ffmpeg out: %v", out.String())
 
-	// // Replace bytes with transcoded data
-	// // data, _ := ioutil.ReadFile("buffer.mp4")
-	// // p = data
+	// go func() {
+	// 	defer stdin.Close()
+	// 	stdin.Write(p)
+	// }()
+
+	// err = cmd.Start()
+	// if err != nil {
+	// 	log.Println("Error starting")
+	// }
+
+	// cmd.Wait()
+
+	// log.Println(out.Len())
+
+	// p = out.Bytes()
 
 	return
 }
@@ -101,21 +103,6 @@ func torHandler(w http.ResponseWriter, r *http.Request) {
 	creader := CReader{t.NewReader()}
 	defer creader.Reader.Close()
 
-	//
-	// cmd := exec.Command("ffmpeg", "-i", "buffer-in.mp4", "-ab", "300k", "-f", "mp4", "frag_keyframe+empty_moov+faststart", "buffer.mp4")
-	cmd := exec.Command("ffmpeg", "-i", "buffer-in.mp4", "-c:v", "libvpx", "-b:v", "1M", "libvorbis", "buffer.webm")
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
-	if err != nil {
-		log.Printf("ffmpeg err: %v", stderr.String())
-		log.Panic(err)
-	}
-	log.Printf("ffmpeg out: %v", out.String())
-
 	// add monitor logging if this is the first time adding the torrent
 	// if isNew {
 	// 	go func() {
@@ -153,6 +140,22 @@ func torHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+type FRSeeker struct {
+	*os.File
+}
+
+func (f FRSeeker) Read(p []byte) (n int, err error) {
+	log.Println("Intercepted read!", len(p))
+	n, err = f.File.Read(p)
+	return
+}
+
+func (f FRSeeker) Seek(offset int64, whence int) (n int64, err error) {
+	log.Printf("Intercepted seek, offset: %v, whence: %v\n", offset, whence)
+	n, err = f.File.Seek(offset, whence)
+	return
+}
+
 func fileHandler(w http.ResponseWriter, r *http.Request) {
 	filePath := "./lowquality.mp4"
 	file, err := os.Open(filePath)
@@ -165,22 +168,25 @@ func fileHandler(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	fmt.Printf("serve %s\n", filePath)
 	_, filename := path.Split(filePath)
-	http.ServeContent(w, r, filename, time.Time{}, file)
+
+	frseeker := FRSeeker{file}
+	http.ServeContent(w, r, filename, time.Time{}, frseeker)
 }
 
 func main() {
-	client, err := torrent.NewClient(nil)
-	if err != nil {
-		log.Printf("ERROR: %v\n", err)
-	}
-	defer client.Close()
-	cl = client
+	// client, err := torrent.NewClient(nil)
+	// if err != nil {
+	// 	log.Printf("ERROR: %v\n", err)
+	// }
+	// defer client.Close()
+	// cl = client
 
-	http.HandleFunc("/", torHandler)
+	http.HandleFunc("/", fileHandler)
 
 	log.Println("Listening on :3000...")
-	err = http.ListenAndServe(":3000", nil)
+	err := http.ListenAndServe(":3000", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
+
 }
